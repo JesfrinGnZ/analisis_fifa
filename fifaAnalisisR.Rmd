@@ -1,0 +1,836 @@
+---
+title: "Análisis de datos FIFA 2015-2020"
+output:
+  html_notebook: default
+  Autor: Jesfrin Jesser González Fuentes(999014909)
+---
+
+El siguiente análisis comprende las siguientes fases:
+
+1. **Data Cleaning**
+2. **Data Wrangling**
+3. **Data Transformation**
+
+El objetivo principal es proporcionar información a los gamers que juegan al videojuego FIFA, permitiéndoles seleccionar mejor a sus futbolistas y equipos en los distintos modos del juego. 
+
+### Diferenciación de Términos
+
+Es importante diferenciar entre:
+
+- **Gamers** o **jugadores de FIFA**: usuarios del videojuego que buscan optimizar sus elecciones de equipos y jugadores en el juego.
+- **Futbolista** o **futbolistas del dataset**: futbolistas de la vida real, cuyos atributos y habilidades están registrados en el dataset y reflejan sus habilidades físicas y técnicas en el mundo real.
+
+
+
+# **1. Data Cleaning**
+
+## Análisis exploratorio de datos(EDA) 
+
+
+```{r}
+if (!require(dplyr)) install.packages("dplyr")
+library(dplyr)
+
+if (!require(skimr)) install.packages("skimr")
+library(skimr)
+
+if (!require(tidyr)) install.packages("tidyr")
+library(tidyr)
+
+if (!require(tidyr)) install.packages("ggplot2")
+library(ggplot2)
+
+if (!require(gridExtra)) install.packages("gridExtra")
+library(gridExtra)
+
+if (!require(corrplot)) install.packages("corrplot")
+library(corrplot)
+
+if (!require(corrplot)) install.packages("purrr")
+library(purrr)
+
+if (!require(corrplot)) install.packages("stringr")
+library(stringr)
+
+```
+
+### 1.1 Carga de datos
+
+Se cargan datos de los futbolistas del dataset, los cuales comprenden desde el año 2015 hasta el 2020. Se agrega la cariable "year", para poder identificar a que año pertenece el dato.
+
+```{r}
+# Cargar el archivo CSV y agregar la columna "year" al dataframe
+players15 <- read.csv("fifa2020/players_15.csv", sep = ",", colClasses = "character", na.strings = c(""))
+players15$year <- 2015
+
+players16 <- read.csv("fifa2020/players_16.csv", sep = ",", colClasses = "character", na.strings = c(""))
+players16$year <- 2016
+
+players17 <- read.csv("fifa2020/players_17.csv", sep = ",", colClasses = "character", na.strings = c(""))
+players17$year <- 2017
+
+players18 <- read.csv("fifa2020/players_18.csv", sep = ",", colClasses = "character", na.strings = c(""))
+players18$year <- 2018
+
+players19 <- read.csv("fifa2020/players_19.csv", sep = ",", colClasses = "character", na.strings = c(""))
+players19$year <- 2019
+
+players20 <- read.csv("fifa2020/players_20.csv", sep = ",", colClasses = "character", na.strings = c(""))
+players20$year <- 2020
+
+
+all_players <- bind_rows(players15, players16, players17, players18, players19, players20)
+
+```
+
+### 1.2 Revisión de la estructura de datos.
+
+
+```{r}
+str(all_players)
+```
+### 1.3 Limpieza de datos
+#### Conversión de tipo de datos
+
+Ya que al inicio del análisis se transformaron todos los datos a tipo cadena, ahora se indagara en que datos deben ser de tipo numerico.
+
+Existen diversas variables las cuales poseen datos como "90+2" "80-1" etc. Se buscará solo dejar los valores base para su análisis, ya que los valores como +2 o -1 solamente representan la química del futbolista, lo cual no se analizará.
+```{r}
+
+convert_to_number <- function(column) {
+  as.numeric(as.character(column))
+}
+
+#Variable sofifa_id(1)
+all_players$sofifa_id <- as.integer(as.character(all_players$sofifa_id))
+
+#Variable age(5)
+all_players$age <- as.numeric(as.character(all_players$age))
+
+#Variables desde height_cm(7) hasta weight_kg(8)
+all_players[, c("height_cm", "weight_kg")] <- lapply(all_players[, c("height_cm", "weight_kg")], convert_to_number)
+
+#Variables desde overall(11) hasta wage_eur(14)
+all_players[, 11:14] <- lapply(all_players[, 11:14], convert_to_number)
+
+#Variables desde international_reputation(17) hasta skill_moves(19)
+all_players[, 17:19] <- lapply(all_players[, 17:19], convert_to_number)
+
+#Variable release_clause_eur(23)
+all_players$release_clause_eur <- as.numeric(as.character(all_players$release_clause_eur))
+
+#Variable team_jersey_number(26)
+all_players$team_jersey_number <- as.numeric(as.character(all_players$team_jersey_number))
+
+all_players$contract_valid_until <- as.numeric(as.character(all_players$contract_valid_until))
+
+#Variables desde nation_jersey_number(32) hasta gk_positioning(44)
+all_players[, 31:43] <- lapply(all_players[, 31:43], convert_to_number)
+
+
+# Variables desde attacking_crossing(45) hasta ultima variable
+all_players[, 45:ncol(all_players)] <- lapply(all_players[, 45:ncol(all_players)], function(column){
+  base_column <- sub("[+-].*", "", column)
+  return(as.numeric(as.character(base_column))) 
+})
+
+
+```
+
+#### Revisión de la estructura de datos luego de transformación.
+
+```{r}
+
+#Información actual del dataset
+df_resume_all_players <- skim(all_players)
+```
+
+#### Rellenar con la media
+
+Llenar por la media donde las variables son 0. En específico, value_eur y wage_eur, ya que estos datos pueden ser calculados en base a un historial y que al tratarse del valor del futbolista en el mercado, y su salario, no cambian demasiado de un año a otro.
+
+```{r}
+
+fill_0_with_group_mean <- function(data, column_group, columns) {
+  # Convertir el nombre de la columna de agrupación a texto
+  group_col <- as_label(enquo(column_group))
+  
+  for (column_name in columns) {
+    # Calcular la media de cada grupo, excluyendo valores 0 y NA
+    group_means <- data %>%
+      filter(!!sym(column_name) != 0) %>% # Filtrar para excluir valores 0
+      group_by(!!sym(group_col)) %>%
+      summarize(mean_value = ifelse(n() > 0, mean(!!sym(column_name), na.rm = TRUE), 0), .groups = "drop")
+    
+    # Unir las medias al conjunto de datos original y reemplazar los valores 0
+    data <- data %>%
+      left_join(group_means, by = group_col) %>%
+      mutate(!!sym(column_name) := ifelse(!!sym(column_name) == 0 & !is.na(mean_value), mean_value, !!sym(column_name))) %>%
+      select(-mean_value) # Eliminar la columna temporal 'mean_value'
+  }
+  return(data)
+}
+
+all_players <- fill_0_with_group_mean(all_players, sofifa_id, c("value_eur", "wage_eur"))
+
+
+
+```
+
+
+Datos NA que se corrigen en base a la media de los atributos del futbolista. Es decir si un atributo "pace" no esta disponible para este futbolista en un año, se calcula la media de "pace" de este futbolista en los años donde si este disponible.  Si no existen datos para calcular la media, se coloca 0 como valor por defecto.
+
+
+```{r}
+
+#Función que agrupa en vase a un valor y devuelve el promedio de la variable especificada de turno en el parametro columns
+fill_na_with_mean <- function(data, column_group, columns) {
+  for (column_name in columns) {
+    data <- data %>%
+      group_by({{ column_group }}) %>%
+      mutate(!!sym(column_name) := ifelse(is.na(!!sym(column_name)), 
+                                          ifelse(all(is.na(!!sym(column_name))), 0, 
+                                                 mean(!!sym(column_name), na.rm = TRUE)), 
+                                          !!sym(column_name))) %>%
+      ungroup()
+  }
+  return(data)
+}
+  
+# Lista de columnas a aplicar el reemplazo de NA con el promedio
+columns_to_fill <- c("release_clause_eur", "pace", "shooting", "passing", 
+                     "dribbling", "defending", "physic", "mentality_composure")
+
+# Llamada a función con todas las columnas
+all_players <- fill_na_with_mean(all_players, sofifa_id, columns_to_fill)
+
+
+```
+
+#### Rellenar con 0
+
+Los atributos de los futbolistas que juegan en la posición de portero comienzan con el prefijo gk. Se espera que los futbolistas que no juegan en esta posición tengan NA en estos atributos, por lo que se agregara 0 como número que representa su habilidad en esta posición.
+
+```{r}
+
+# Función para llenar valores NA con 0 para una lista de columnas
+fill_na_with_0 <- function(data, columns) {
+  for (column_name in columns) {
+    data <- data %>%
+      mutate(!!sym(column_name) := ifelse(is.na(!!sym(column_name)), 0, !!sym(column_name)))
+  }
+  return(data)
+}
+
+# Llenar valores NA en la columna gk_* con 0 para jugadores de campo
+
+skills_gk_variables <- c("gk_diving", "gk_handling", "gk_kicking", "gk_reflexes","gk_speed", "gk_positioning")
+all_players <- fill_na_with_0(all_players, skills_gk_variables)
+
+
+#Llenar valores NA en columnas de posiciones con 0 para porteros
+
+postion_variables <- c("ls", "st", "rs", "lw", "lf", "cf", "rf", "rw", 
+                     "lam", "cam", "ram", "lm", "lcm", "cm", "rcm", "rm", 
+                     "lwb", "ldm", "cdm", "rdm", "rwb", "lb", "lcb", "cb", 
+                     "rcb", "rb")
+all_players <- fill_na_with_0(all_players, postion_variables)
+
+```
+
+#### Rellenar con el valor "NO_DATA" 
+
+Se introducira el valor "NO_DATA" para variables tipo cadena con NA.
+
+```{r}
+# Función para llenar valores NA con "NO_DATA"para una lista de columnas
+fill_na_with_no_data <- function(data, columns) {
+  for (column_name in columns) {
+    data <- data %>%
+      mutate(!!sym(column_name) := ifelse(is.na(!!sym(column_name)), "NO_DATA", !!sym(column_name)))
+  }
+  return(data)
+}
+
+
+#Llenar valores NA en columnas de cadenas de texto
+
+strings_variables <- c("player_tags", "team_position", "loaned_from", "nation_position", "player_traits")
+all_players <- fill_na_with_no_data(all_players, strings_variables)
+
+
+```
+
+#### Rellenar con el valor más repetido
+
+Para el caso de la variable team_jersey_number que representa el número o dorsal del futbolista, se utilizara el valor más frecuente para cada futbolista individual, para rellenar el valor faltante. De esta manera si el jugador con id 1234 tiene 5 como el dorsal más repetido, se usara 5 en donde este valor haga falta. 
+
+```{r}
+
+# Imputar NA con el valor más frecuente por jugador para variable team_jersey_number
+all_players <- all_players %>%
+  group_by(sofifa_id) %>%
+  mutate(team_jersey_number = ifelse(is.na(team_jersey_number), 
+                                     as.integer(names(which.max(table(team_jersey_number)))), 
+                                     team_jersey_number)) %>%
+  ungroup()
+```
+
+#### Variables que no se modificaran aunque tengan NA
+
+Los siguientes valores no se les eliminara el NA. Aquí el porque de esta decisión:
+
+1. *joined:* No se tiene la fecha exacta cuando el jugador fue ingresado a la base de datos del dataset
+
+2. *contract_valid_until:* No se tiene información exacta de cuando expira el contrato de un jugador, además de que este puede haber sido renovado, por lo que el valor puede variar.
+
+3. *nation_jersey_number:* No se tiene información exacta del número que puede tener el jugador en su seleccion nacional. También existe la posibilidad de que el jugador no tenga número por el hecho de que no fue convcado a la selección nacional en ese año en específico.
+
+
+
+#### Separar variables que contengan fechas
+```{r}
+
+# Separar la columna dob en year_dob, month_dob y day_dob
+all_players <- all_players %>%
+  separate(dob, into = c("year_dob", "month_dob", "day_dob"), sep = "-", convert = TRUE)
+```
+
+#### Identificar y estandarizar variables que contengan categorias
+
+Se convertiran los valores de las variables clave a mayúscula y se eliminaran espacios en blanco que puedan existir al inicio o final de cada valor.
+```{r}
+#Función para normalizar variables
+normalize_columns <- function(data, columns) {
+  data <- data %>%
+    mutate(across(all_of(columns), ~ toupper(trimws(.))))
+  return(data)
+}
+
+
+all_players <- normalize_columns(all_players, c("nationality", "club", "player_positions", 
+                                                "preferred_foot", "work_rate", "real_face", 
+                                                "team_position", "loaned_from"))
+
+```
+
+### 1.4 Exploración estadística descriptiva
+
+```{r}
+#Información actual del dataset
+df_resume_all_players <- skim(all_players)
+print(df_resume_all_players)
+```
+
+
+```{r}
+
+#número de jugadores únicos 
+number_of_players <- count(
+  all_players %>%
+   distinct(sofifa_id)
+)
+
+
+#inconsistencia con tipo de pie
+both_feet_count <- count(
+  both_feet_players <- all_players %>%
+  group_by(sofifa_id) %>%
+  summarize(distinct_feet = n_distinct(preferred_foot)) %>%
+  filter(distinct_feet > 1)
+)
+
+#numero de jugadores con cara real
+number_of_players_with_real_face <- nrow(
+  count(
+  all_players %>%
+    group_by(sofifa_id, real_face) %>%
+    filter(real_face == 'YES')
+)
+)
+
+#numero de jugadores cedidos
+number_of_players_loaded <- nrow(
+  count(
+  all_players %>%
+   group_by(sofifa_id, loaned_from) %>%
+   filter(loaned_from != 'NO_DATA') 
+))
+
+
+```
+Para algunas variables, se encontro las siguientes observaciones relevantes: 
+
+
+- **nationality**: Existen 179 nacionalidades distintas en el dataset.
+- **club**: Existen 918 equipos distintos en el dataset.
+- **player_positions**: Existen distintas posiciones, y varios jugadores pueden jugar en más de una posición.
+- **preferred_foot**: Algunos jugadores tienen el pie derecho como el hábil en un año y el pie izquierdo en otro año. Esto sugiere que estos datos no están tomados de la mejor manera. Sin embargo, esto solo ocurre en 849 jugadores de 36,559, lo que representa un 2.32%.
+- **work_rate**: Work Rate incluye combinaciones de **LOW**, **MEDIUM**, y **HIGH**, formando 9 combinaciones distintas.
+- **body_type**: Existen 3 tipos principales de cuerpos, además de tipos especiales para jugadores excepcionales en cuanto a habilidades o características físicas.
+- **real_face**: Existen 2,431 jugadores con cara real en al menos un año del dataset.
+- **loaned_from**: Existen 5,310 jugadores que fueron cedidos en préstamo en al menos un año entre 2015 y 2020.
+- **sofifa_id**: Identificador único de cada jugador en el dataset.
+- **age**: 
+  - Edad mínima: 16 años.
+  - Edad máxima: 47 años.
+  - Promedio: 25 años.
+  - Desviación estándar: 4.63 años.
+- **height_cm**:
+  - Altura mínima: 154 cm.
+  - Altura máxima: 205 cm.
+  - Promedio: 181 cm.
+  - Desviación estándar: 6.69 cm.
+- **weight_kg**:
+  - Peso mínimo: 49 kg.
+  - Peso máximo: 110 kg.
+  - Promedio: 75 kg.
+  - Desviación estándar: 6.975 kg.
+- **overall**:
+  - Valoración mínima: 40.
+  - Valoración máxima: 94.
+  - Promedio: 65.
+  - Desviación estándar: 7.
+- **potential**:
+  - Potencial mínimo: 40.
+  - Potencial máximo: 95.
+  - Promedio: 70.
+  - Desviación estándar: 6.32.
+- **value_eur**:
+  - Valor mínimo: 0.
+  - Valor máximo: 123 millones de euros.
+  - Promedio: 2 millones de euros.
+  - Desviación estándar: 5 millones de euros.
+
+### 1.5 Visualización de datos
+
+#### Atributos generales
+
+```{r}
+
+#Columnas de atributos generales
+data_to_plot <- all_players %>%
+  select(age, height_cm, weight_kg, overall, potential) %>%
+  pivot_longer(cols = everything(), names_to = "attribute", values_to = "value")
+
+#Múltiples histogramas 
+ggplot(data_to_plot, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "green", color = "black", alpha = 0.7) +
+  facet_wrap(~ attribute, scales = "free") +
+  labs(title = "Distribución de Atributos generales",
+       x = "Valor",
+       y = "Frecuencia") +
+  theme_minimal()
+```
+
+En los histogramas de atributos generales de los jugadores, se observa lo siguiente:
+
+1. **Edad (`age`)**: La mayoría de los jugadores se concentra alrededor de los 25 años, lo que nos da a entender que la edad promedio en el dataset es relativamente joven. 
+
+2. **Altura (`height_cm`)**: La altura promedio se encuentra alrededor de los 180 cm, con una distribución normal centrada cerca de este valor. 
+
+3. **Valoración General (`overall`)**: La mayoría de los jugadores tienen una valoración que oscila entre 60 y 70, con pocos jugadores superando una calificación de 80. Esto refleja que el número de jugadores de élite (con valoraciones muy altas) es menor en comparación con los jugadores promedio.
+
+4. **Potencial (`potential`)**: El potencial también sigue una distribución similar al `overall`, con una mayoría de jugadores en el rango de 60 a 70 de potencial. Esto nos indica que, en términos generales, los jugadores tienen un potencial moderado, con pocos jugadores alcanzando el rango de 90 o superior.
+
+5. **Peso (`weight_kg`)**: El peso promedio ronda los 75 kg.
+
+Podemos resaltar en base a lo anterior que la mayoría de futbolistas tiene una calificación moderada y que los jugadores excepcionales (con valores extremos en estos atributos) son pocos en comparación.
+ 
+
+
+#### Atributos de Rendimiento y Habilidad
+```{r}
+
+#Columnas de rendimiento y habilidad
+data_to_plot <- all_players %>%
+  select(pace, shooting, passing, dribbling, defending, physic) %>%
+  pivot_longer(cols = everything(), names_to = "attribute", values_to = "value")
+
+#Múltiples histogramas 
+ggplot(data_to_plot, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black", alpha = 0.7) +
+  facet_wrap(~ attribute, scales = "free") +
+  labs(title = "Atributos de rendimiento y habilidad",
+       x = "Valor",
+       y = "Frecuencia") +
+  theme_minimal()
+
+```
+
+En los histogramas anteriores se observa lo siguiente:
+
+De manera general se tiene que existen varios futbolistas que poseen habilidad 0 o cercana a 0 en los atributos de rendimiento y habilidad. Esto se debe a que son porteros, y se les coloco 0 como habilidad en este aspecto, ya que no es de importancia para un portero estos atributos. 
+
+1. **Defending**: Existe una cantidad significativa de jugadores con habilidades defensivas en rangos medios y altos.
+
+2. **Dribbling**: La mayoría de los jugadores tienen una calificación de dribbling entre 50 y 80, lo que nos indica que la habilidad para el regate es relativamente buena en la mayoria de jugadores.
+
+3. **Pace**: La velocidad tiene una distribución que se concentra entre 50 y 80. Esto sugiere que la velocidad promedio de los jugadores es razonablemente alta.
+
+4. **Passing**: La habilidad de pase se distribuye principalmente entre 50 y 75. Esto refleja que la mayoría de los jugadores tienen una capacidad de pase razonable, con pocos jugadores en los extremos más bajos y algunos alcanzando calificaciones de pase sobresalientes.
+
+5. **Physic**: La capacidad física tiene un rango de 50 a 75 para la mayoría de los jugadores, lo cual es esperable en un deporte de alto rendimiento como el fútbol. Hay jugadores con poca capacidad física, pero son una minoría.
+
+6. **Shooting**: La habilidad de disparo se encuentra principalmente entre 50 y 75. Esto indica que la mayoría de los jugadores tienen una habilidad moderada para disparar a gol, con algunos jugadores de élite que sobresalen en este aspecto.
+
+
+#### Atributos de ataque
+
+```{r}
+#Columnas de ataque
+data_to_plot <- all_players %>%
+  select(attacking_crossing, attacking_finishing, attacking_heading_accuracy) %>%
+  pivot_longer(cols = everything(), names_to = "attribute", values_to = "value")
+
+#Múltiples histogramas 
+ggplot(data_to_plot, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "yellow", color = "black", alpha = 0.7) +
+  facet_wrap(~ attribute, scales = "free") +
+  labs(title = "Atributos de ataque",
+       x = "Valor",
+       y = "Frecuencia") +
+  theme_minimal()
+```
+
+En los histogramas de atributos de ataque, se observa lo siguiente:
+
+1. **Attacking Crossing**: La habilidad de centro (`attacking_crossing`) muestra una distribución en la que la mayoría de los jugadores tienen calificaciones entre 40 y 70. Esto indica que, en promedio, los jugadores tienen una capacidad de centro moderada, con pocos jugadores alcanzando niveles de élite en esta habilidad.
+
+2. **Attacking Finishing**: La finalización (`attacking_finishing`) presenta una distribución similar, concentrándose entre 40 y 70. Esto indica que muchos jugadores tienen una habilidad de finalización decente. Existe también una menor cantidad de jugadores en rangos más altos que probablemente representan a los goleadores de élite.
+
+3. **Attacking Heading Accuracy**: La precisión en el cabeceo (`attacking_heading_accuracy`) tiene una distribución más sesgada, con una mayoría de jugadores ubicados entre 40 y 70, pero también con un pico en valores bajos. Esto nos indica que aunque muchos jugadores son habilidosos en el juego aéreo, es una habilidad menos común.
+
+#### Atributos de defensa
+```{r}
+#Columnas de defensa
+data_to_plot <- all_players %>%
+  select(defending_marking, defending_standing_tackle, defending_sliding_tackle) %>%
+  pivot_longer(cols = everything(), names_to = "attribute", values_to = "value")
+
+#Múltiples histogramas 
+ggplot(data_to_plot, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "red", color = "black", alpha = 0.7) +
+  facet_wrap(~ attribute, scales = "free") +
+  labs(title = "Atributos de defensa",
+       x = "Valor",
+       y = "Frecuencia") +
+  theme_minimal()
+```
+
+
+En los histogramas de atributos de defensa, se observa lo siguiente:
+
+1. **Defending Marking**: La habilidad de marcaje (`defending_marking`) muestra una distribución bastante amplia, con una mayoría de jugadores entre 25 y 75. Esto indica que muchos jugadores tienen habilidades de marcaje moderadas, con menos jugadores que destacan o tienen una habilidad muy baja.
+
+2. **Defending Sliding Tackle**: La habilidad de barrida o entrada (`defending_sliding_tackle`) también muestra una distribución amplia, con una mayoría de jugadores en el rango de 25 a 75, aunque con un pico notable en la zona media. 
+
+3. **Defending Standing Tackle**: La habilidad de entrada en pie (`defending_standing_tackle`) tiene una distribución similar a los otros atributos defensivos, con la mayoría de los jugadores en la gama de 25 a 75. La concentración en valores medios sugiere que, aunque muchos jugadores pueden realizar entradas en pie de manera efectiva, no son muchos los que alcanzan el nivel de élite en este aspecto.
+
+
+#### Atributos en protería
+
+```{r}
+#Columnas de habilidades en prorteria
+data_to_plot <- all_players %>%
+  filter(player_positions == 'GK') %>%
+  select(goalkeeping_diving, goalkeeping_handling, goalkeeping_kicking,goalkeeping_positioning,goalkeeping_reflexes) %>%
+  pivot_longer(cols = everything(), names_to = "attribute", values_to = "value")
+
+#Múltiples histogramas 
+ggplot(data_to_plot, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "white", color = "black", alpha = 0.7) +
+  facet_wrap(~ attribute, scales = "free") +
+  labs(title = "Atributos de portería",
+       x = "Valor",
+       y = "Frecuencia") +
+  theme_minimal()
+```
+
+
+En los histogramas de atributos de portería, se observa lo siguiente:
+
+De manera general se tiene que existen varios futbolistas que poseen habilidad 0 o cercana a 0 en los atributos de portería. Esto se debe a que son futbolistas de campo, y se les coloco 0 como habilidad en este aspecto, ya que no es de importancia para un futbolista de campo estos atributos. Es por eso que se filtro solo a porteros, para tener un mejor panorama.
+
+1. **Goalkeeping Diving**: La habilidad de estirada del portero (`goalkeeping_diving`) muestra una distribución con una media en el rango de 60-70. Esto indica que los porteros tienen un buen desempeño en esta habilidad, aunque se tienen valores que abarcan desde los 40 hasta cerca de los 90.
+
+2. **Goalkeeping Handling**: La habilidad de manejo del balón (`goalkeeping_handling`) también presenta una distribución similar, con una media cercana a 60-70. Esto sugiere que, en promedio, los porteros tienen un manejo sólido del balón.
+
+3. **Goalkeeping Kicking**: La habilidad de patada del portero (`goalkeeping_kicking`) se distribuye de manera parecida, con valores centrados entre 50 y 70. 
+
+4. **Goalkeeping Positioning**: La habilidad de posicionamiento del portero (`goalkeeping_positioning`) también sigue un patrón similar, lo que indica que la mayoría de los porteros tienen habilidades de posicionamiento bastante consistentes.
+
+5. **Goalkeeping Reflexes**: La habilidad de reflejos del portero (`goalkeeping_reflexes`) es un atributo donde se observa una concentración fuerte alrededor de 60-70, siendo esta habilidad importante para atajar disparos inesperados.
+
+
+#### 1.6 Análisis de correlación
+```{r}
+data_corr <- all_players %>%
+  select(pace, shooting, passing, dribbling, defending, physic, overall, potential)
+
+# Calcular matriz de correlación
+correlation_matrix <- cor(data_corr, use = "complete.obs")
+
+# Visualizar matriz de correlación
+corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", 
+         tl.srt = 45, addCoef.col = "black", number.cex = 0.7,
+         title = "Matriz de Correlación de Atributos de Rendimiento y Calificación",
+         mar = c(0, 0, 2, 0))
+```
+
+
+La matriz de correlación anterior permite observar las relaciones entre distintos atributos de rendimiento de los jugadores y sus calificaciones generales. A continuación, se destacan algunos puntos clave:
+
+1. **Correlaciones Altas entre Atributos de Rendimiento**:
+   - **Passing y Dribbling** tienen una alta correlación (0.96), indicando que los jugadores con buenos valores de pase suelen tener buenas habilidades de dribbling.
+   - **Shooting y Passing** (0.88), y **Shooting y Dribbling** (0.91) también muestran correlaciones elevadas, sugiriendo que los jugadores que destacan en disparo también suelen tener buenas habilidades en pase y dribbling.
+
+2. **Correlación con el Atributo Overall**:
+   - **Overall** tiene correlaciones moderadas con atributos como **Passing** (0.37) y **Dribbling** (0.31). Esto nos indica que, aunque estos atributos influyen en la calificación general de un jugador, no son los únicos factores determinantes.
+   - **Potential** tiene una correlación más fuerte con **Overall** (0.72), lo cual sugiere que los jugadores con mayor calificación general tienden a tener un alto potencial de crecimiento.
+
+3. **Correlación Baja con el Atributo Potential**:
+   - La correlación de **Potential** con otros atributos de rendimiento, como **Defending** (0.16) o **Physic** (0.15), es relativamente baja. Esto indica que, aunque algunos atributos influyen en el potencial, este se ve afectado por otros factores que no están directamente relacionados con las habilidades físicas o de juego.
+
+
+
+#### 1.7 Exploración de datos categóricos
+
+Calculo de la calificación primedio por club
+```{r}
+# Calculo de la calificación promedio por club, considerando solo clubes con al menos 7 jugadores
+clubes_mejores <- all_players %>%
+  group_by(club) %>%
+  filter(n() >= 7) %>%  # Filtrar clubes con al menos 5 jugadores
+  summarize(avg_overall = mean(overall, na.rm = TRUE)) %>%
+  arrange(desc(avg_overall)) %>%
+  slice(1:10)  # Seleccionar los 10 mejores clubes
+
+# Graficar
+ggplot(clubes_mejores, aes(x = reorder(club, avg_overall), y = avg_overall, fill = club)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  labs(title = "Top 10 Clubes con Mejores Futbolistas (mín. 5 jugadores)",
+       x = "Club",
+       y = "Calificación Promedio (Overall)") +
+  coord_flip() +
+  theme_minimal()
+
+
+```
+
+Podemos observar en la gráfica anterior que si un gamer desea escoger un club con los mejores jugadores en su plantilla puede escoger uno de los anteriores. Se resaltan clubes como Juventus, FC Barcelona, FC Bayern y Real Madrid, los cuales justamente coinciden con los clubes que en la vida real poseen los jugadores más desequilibrantes. 
+
+## 2. Data wrangling
+
+#### 2.1 Creando nuevas variables
+
+Calidad/Potencial (potential_gap): Diferencia entre el potencial y la calificación general actual de cada jugador. Esta variable permitira mostrar el margen de mejora de cada jugador. Un valor alto nos indicará que el jugador cuenta con un gran potencial de crecimiento.
+```{r}
+
+all_players <- all_players %>%
+  mutate(potential_gap = potential - overall)
+```
+
+Posición Principal (main_position): Extrae la posición principal del jugador en caso de que esté en múltiples posiciones.
+
+```{r}
+all_players <- all_players %>%
+  mutate(main_position = str_split(player_positions, ",") %>% map_chr(1))
+
+```
+
+Crear una nueva columna de rangos de edad
+
+```{r}
+
+all_players <- all_players %>%
+  mutate(age_group = cut(age, breaks = c(15, 20, 25, 30, 35, 40, 45), 
+                         labels = c("15-20", "21-25", "26-30", "31-35", "36-40", "41-45")))
+```
+
+#### 2.2 Preguntas y soluciones
+
+> ¿Cuáles son los jugadores con mayor potencial de crecimiento?
+
+```{r}
+top_potential_gap <- all_players %>%
+  filter(year == 2020) %>%
+  arrange(desc(potential_gap)) %>%
+  slice(1:10)
+
+ggplot(top_potential_gap, aes(x = reorder(long_name, potential_gap), y = potential_gap)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Jugadores con Mayor Potencial de Crecimiento en 2020",
+       x = "Jugador",
+       y = "Diferencia entre Potencial y Calificación Actual") +
+  coord_flip() +
+  theme_minimal()
+
+```
+Se puede concluir que existen jugadores con un potencial bastante interesante, de hasta 25 puntos. Estos jugadores serían idóneos para ser utilizados en modo carrera, ya que este modo le permite a los gamers desarrollar al jugador y  explotar dicho potencial.
+
+> ¿Cómo se distribuyen los atributos de rendimiento clave para cada posición principal?
+
+```{r}
+# Convertir los atributos de rendimiento clave a formato largo
+long_data <- all_players %>%
+  select(main_position, pace, shooting, passing, dribbling, defending, physic) %>%
+  pivot_longer(cols = c(pace, shooting, passing, dribbling, defending, physic),
+               names_to = "attribute",
+               values_to = "value")
+
+# Graficar con geom_violin
+ggplot(long_data, aes(x = main_position, y = value, fill = attribute)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  facet_wrap(~attribute, scales = "free_y") +
+  labs(title = "Distribución de Atributos de Rendimiento por Posición Principal",
+       x = "Posición Principal",
+       y = "Valor del Atributo") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Esta gráfica muestra la distribución de diferentes atributos de rendimiento (defending, dribbling, pace, passing, physic, shooting) en función de la posición principal de los jugadores. A continuación, se destacan algunos hallazgos clave:
+
+1. **Defending**:
+   - Los valores más altos en el atributo "defending" corresponden principalmente a posiciones defensivas como CB (defensa central), LB (lateral izquierdo), y RB (lateral derecho).
+   - Los jugadores en posiciones ofensivas (como ST y LW) tienen valores significativamente más bajos en este atributo, lo cual refleja su rol menos defensivo en el juego.
+
+2. **Dribbling**:
+   - El atributo "dribbling" es alto en posiciones ofensivas como CAM (centrocampista ofensivo), LW (lateral izquierdo), y RW (lateral derecho), que suelen requerir habilidades de control de balón para avanzar en el campo.
+   - Las posiciones defensivas muestran valores más bajos en dribbling, lo cual es consistente con sus responsabilidades en el juego.
+
+3. **Pace**:
+   - Las posiciones de ataque y alas (LW, RW, ST) tienen los valores más altos de "pace," lo cual es crucial para avanzar rápidamente hacia el área rival.
+   - Las posiciones centrales de defensa como CB tienden a tener menor "pace," reflejando un enfoque más posicional que de velocidad.
+
+4. **Passing**:
+   - Los jugadores en posiciones de mediocampo, como CM (centrocampista) y CAM, muestran altos valores de "passing," dado que estas posiciones están más involucradas en la creación de juego y distribución del balón.
+   - Las posiciones de defensa y de ataque directo presentan menor habilidad en passing en promedio.
+
+5. **Physic**:
+   - El atributo "physic" es alto en posiciones defensivas y en delanteros (como CB y ST), donde la fuerza y resistencia física son críticas.
+   - En posiciones más técnicas como CAM y LW, los valores de "physic" son menores, ya que la habilidad técnica predomina sobre la fuerza física.
+
+6. **Shooting**:
+   - Los delanteros (ST) tienen los valores más altos de "shooting," lo cual es fundamental para finalizar jugadas y marcar goles.
+   - Las posiciones de defensa y de mediocampo defensivo presentan los valores más bajos de shooting, ya que tienen menor participación en el ataque.
+
+
+
+> ¿Qué jugadores jóvenes tienen el potencial más alto?
+
+```{r}
+
+# Límite para jugadores jóvenes
+edad_limite <- 23
+
+# Filtrar jugadores
+jugadores_jovenes_top <- all_players %>%
+  filter(age < edad_limite) %>%
+  arrange(desc(potential)) %>%
+  slice(1:15)  
+
+# Visualización 
+ggplot(jugadores_jovenes_top, aes(x = reorder(short_name, potential), y = potential, fill = potential)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  labs(title = "Top 15 Jugadores Jóvenes con Mayor Potencial",
+       x = "Jugador",
+       y = "Potencial") +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+
+```
+
+Entre los futbolistas menores de 23 años con mayor potencial podemos observar futbolistas consolidados en la realidad, como lo son el caso de Mbappé, Donnarumma, M. de Light entre otros. Por lo cual es una buena idea tomarlos en cuenta a la hora de armar un equipo.
+
+> ¿Cómo influye la edad a la valoración y el potencial de un jugador?
+
+```{r}
+
+ggplot(all_players, aes(x = overall, y = potential, color = age)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  scale_color_gradient(low = "yellow", high = "red")
+  labs(title = "Comparación entre Calificación Actual y Potencial de los Jugadores por Edad",
+       x = "Calificación Actual (Overall)",
+       y = "Potencial",
+       color = "Edad") +
+  theme_minimal()
+
+```
+Conclusiones del Gráfico
+
+**Relación entre Calificación Actual y Potencial:**
+- Existe una relación positiva entre la calificación actual y el potencial de los jugadores. La gráfica indica que a medida que aumenta el *overall* de un jugador, también tiende a aumentar su *potential*.
+- La mayoría de los puntos se encuentran por encima de la línea de tendencia, lo que muestra que muchos jugadores tienen un potencial superior a su calificación actual, especialmente los más jóvenes.
+
+**Patrón según la Edad:**
+- Los jugadores jóvenes (representados en amarillo) tienden a tener un potencial alto en comparación con su *overall* actual, lo que indica que tienen margen de mejora.
+- Los jugadores de mayor edad (en tonos anaranjados y rojos) tienen su *overall* y *potential* más alineados, sugiriendo que ya han alcanzado su máximo rendimiento o están cerca de él.
+- A medida que aumenta la edad, es menos común que el *potential* sea significativamente mayor que el *overall*. Esto es un comportamiento esperado, ya que los jugadores mayores suelen haber alcanzado o superado su pico de rendimiento.
+
+**Tomar Decisiones Basadas en el Ciclo de Vida del Jugador:**
+- Los jugadores mayores con *overall* y *potential* similares pueden ser ideales para roles de liderazgo o para cubrir posiciones importantes a corto plazo.
+- En cambio, los jugadores jóvenes con gran diferencia entre *overall* y *potential* pueden ser formados y mejorados para convertirse en futuras estrellas del equipo.
+
+## 3. Data transformation
+
+#### 3.1 Normalización y Escalado de Atributos Numéricos
+
+Algunos atributos normalizaran son: pace, shooting, passing, dribbling, defending, physic, overall, potential. Ya que pueden beneficiarse de esta transformación.
+
+```{r}
+#método de min-max scaling para normalizar los datos en el rango [0, 1].
+
+scale_features <- function(data, columns) {
+  data <- data %>%
+    mutate(across(all_of(columns), ~ (. - min(.)) / (max(.) - min(.))))
+  return(data)
+}
+
+# Columnas a normalizar
+numerical_columns <- c("pace", "shooting", "passing", "dribbling", "defending", "physic", 
+                       "overall", "potential")
+
+# Aplicar la normalización
+all_players <- scale_features(all_players, numerical_columns)
+
+
+```
+
+#### 3.2 Codificación One-Hot para 'main_position', 'preferred_foot' y 'work_rate'
+
+```{r}
+#Se excluiran columnas que no se necesitan
+all_players_one_hot <- all_players %>%
+  select(-player_url, -short_name, -long_name)  # 
+
+# Convertir las variables a One-Hot
+all_players_one_hot <- cbind(
+  all_players_one_hot,
+  model.matrix(~ main_position - 1, data = all_players),
+  model.matrix(~ preferred_foot - 1, data = all_players),
+  model.matrix(~ work_rate - 1, data = all_players)
+)
+
+
+# Eliminar columnas categoricas originales
+all_players_one_hot <- all_players_one_hot %>%
+  select(-main_position, -preferred_foot, -work_rate)
+
+```
+
+
+#### 3.3 Nuevas variables
+
+Jugadores Completos (complete_player):
+
+Se utilizara una combinación de atributos (pace, shooting, passing, dribbling, defending, physic) para definir "jugadores completos" o jugadores que tienen al menos 5 de estos atributos por encima de un valor de 0.8 luego de la transformación.
+
+```{r}
+all_players_one_hot <- all_players_one_hot %>%
+  mutate(complete_player = ifelse(rowSums(across(c("pace", "shooting", "passing", "dribbling", "defending", "physic"), ~ . > 0.8)) >= 5, 1, 0))
+
+```
